@@ -2,10 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Download, Loader2, Bot, User, Mic, MicOff, Image as ImageIcon, X, Save } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-// Initialize Gemini API
-const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || "AIza...");
 
 const ChatInterface = ({ language, saveNote, handleDownloadPdf }) => {
     // ============================================
@@ -79,21 +75,6 @@ const ChatInterface = ({ language, saveNote, handleDownloadPdf }) => {
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
-    // Helper to convert file to base64 for Gemini
-    const fileToGenerativePart = async (file) => {
-        const base64EncodedDataPromise = new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result.split(',')[1]);
-            reader.readAsDataURL(file);
-        });
-        return {
-            inlineData: {
-                data: await base64EncodedDataPromise,
-                mimeType: file.type,
-            },
-        };
-    };
-
     // ============================================
     // VOICE HANDLERS
     // ============================================
@@ -110,7 +91,7 @@ const ChatInterface = ({ language, saveNote, handleDownloadPdf }) => {
     };
 
     // ============================================
-    // SUBMIT HANDLER
+    // SUBMIT HANDLER (OPENAI)
     // ============================================
     const handleSolve = async () => {
         if (!input.trim() && !selectedImage) return;
@@ -132,48 +113,72 @@ const ChatInterface = ({ language, saveNote, handleDownloadPdf }) => {
         setIsLoading(true);
 
         try {
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
-            let prompt = `
-            You are an expert engineering tutor for B.Tech students. 
-            Your goal is to provide clear, detailed, and technically accurate answers to student doubts.
-            
-            Language: ${language}
-            ${language === 'Hinglish' ? 'Explanation should be in a mix of Hindi and English (Hinglish), easy to understand for Indian students. Technical terms should remain in English.' : ''}
-
-            Question: ${input || "Explain this image"}
-            
-            Please provide a structured response with:
-            1. Brief Introduction/Definition
-            2. Detailed Explanation (use points, step-by-step logic)
-            3. Examples or Equations if applicable
-            4. Conclusion or Summary
-            
-            Format the output in clean Markdown.
-            `;
-
-            let result;
-            if (selectedImage) {
-                const imagePart = await fileToGenerativePart(selectedImage);
-                result = await model.generateContent([prompt, imagePart]);
-            } else {
-                result = await model.generateContent(prompt);
+            if (!apiKey) {
+                throw new Error("Missing API Key");
             }
 
-            const response = await result.response;
-            const text = response.text();
+            // Construct payload for GPT-4o
+            const messagesPayload = [
+                {
+                    role: "system",
+                    content: `You are an expert B.Tech engineering tutor. Provide detailed answers in ${language}. ${language === 'Hinglish' ? 'Use a mix of Hindi and English.' : ''} Format in Markdown.`
+                },
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: input || "Explain this image related to engineering." }
+                    ]
+                }
+            ];
+
+            // Add image if present
+            if (imagePreview) {
+                messagesPayload[1].content.push({
+                    type: "image_url",
+                    image_url: {
+                        url: imagePreview
+                    }
+                });
+            }
+
+            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model: "gpt-4o",
+                    messages: messagesPayload,
+                    max_tokens: 1000
+                })
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.error?.message || "OpenAI API Error");
+            }
+
+            const data = await response.json();
+            const answer = data.choices[0].message.content;
 
             setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: text
+                content: answer
             }]);
 
         } catch (error) {
             console.error('Error:', error);
-            let errorMessage = '❌ Sorry, I encountered an error. Please try again.';
+            let errorMessage = '❌ Sorry, I encountered an error.';
 
-            if (error.message.includes('API key')) {
-                errorMessage = `⚠️ **API Key Error**\n\nPlease add your Gemini API Key in Netlify Settings as \`VITE_GEMINI_API_KEY\`.`;
+            if (error.message.includes('Missing API Key')) {
+                errorMessage = `⚠️ **Missing API Key**\n\ প্লPlease add your OpenAI API Key in Netlify Settings as \`VITE_OPENAI_API_KEY\`.`;
+            } else if (error.message.includes('401')) {
+                errorMessage = `⚠️ **Invalid API Key**\n\nThe key provided is incorrect or expired. Please check \`VITE_OPENAI_API_KEY\` in Netlify.`;
+            } else {
+                errorMessage += `\n\nDebug: ${error.message}`;
             }
 
             setMessages(prev => [...prev, {
@@ -332,7 +337,7 @@ const ChatInterface = ({ language, saveNote, handleDownloadPdf }) => {
                             }}
                         >
                             <Loader2 size={18} className="animate-spin" style={{ color: 'var(--color-primary)' }} />
-                            <span className="text-secondary">Analyzing your question...</span>
+                            <span className="text-secondary">Thinking...</span>
                         </div>
                     </div>
                 )}
@@ -384,7 +389,6 @@ const ChatInterface = ({ language, saveNote, handleDownloadPdf }) => {
                     </div>
                 )}
 
-                {/* Input Container */}
                 {/* Input Container */}
                 <div style={{
                     display: 'flex',
